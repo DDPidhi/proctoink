@@ -2,140 +2,94 @@
 
 #[ink::contract]
 mod proctoink {
+    use ink::storage::Mapping;
+    use ink::storage::traits::StorageLayout;
+    use scale::{Decode, Encode};
+    use scale_info::TypeInfo;
 
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout))]
+    #[derive(scale::Encode, scale::Decode, Default, Clone, Debug, PartialEq, Eq)]
+    pub struct ExamMetadata {
+        pub start_time: Option<u64>,
+        pub end_time: Option<u64>,
+        pub violations: [Option<u64>; 3],
+        pub kicked: bool,
+    }
+
     #[ink(storage)]
     pub struct Proctoink {
-        /// Stores a single `bool` value on the storage.
-        value: bool,
+        exam_metadata: Mapping<AccountId, ExamMetadata>,
     }
 
     impl Proctoink {
-        /// Constructor that initializes the `bool` value to the given `init_value`.
         #[ink(constructor)]
-        pub fn new(init_value: bool) -> Self {
-            Self { value: init_value }
+        pub fn new() -> Self {
+            Self {
+                exam_metadata: Mapping::default(),
+            }
         }
 
-        /// Constructor that initializes the `bool` value to `false`.
-        ///
-        /// Constructors can delegate to other constructors.
-        #[ink(constructor)]
-        pub fn default() -> Self {
-            Self::new(Default::default())
-        }
-
-        /// A message that can be called on instantiated contracts.
-        /// This one flips the value of the stored `bool` from `true`
-        /// to `false` and vice versa.
         #[ink(message)]
-        pub fn flip(&mut self) {
-            self.value = !self.value;
+        pub fn set_start(&mut self, user: AccountId, start_time: u64) {
+            let mut meta = self.exam_metadata.get(&user).unwrap_or_default();
+            meta.start_time = Some(start_time);
+            self.exam_metadata.insert(user, &meta);
         }
 
-        /// Simply returns the current value of our `bool`.
         #[ink(message)]
-        pub fn get(&self) -> bool {
-            self.value
+        pub fn add_violation(&mut self, user: AccountId, violation_time: u64) {
+            let mut meta = self.exam_metadata.get(&user).unwrap_or_default();
+
+            for slot in meta.violations.iter_mut() {
+                if slot.is_none() {
+                    *slot = Some(violation_time);
+                    break;
+                }
+            }
+
+            if meta.violations.iter().all(|v| v.is_some()) {
+                meta.kicked = true;
+            }
+
+            self.exam_metadata.insert(user, &meta);
+        }
+
+        #[ink(message)]
+        pub fn set_end(&mut self, user: AccountId, end_time: u64) {
+            let mut meta = self.exam_metadata.get(&user).unwrap_or_default();
+            meta.end_time = Some(end_time);
+            self.exam_metadata.insert(user, &meta);
+        }
+
+        #[ink(message)]
+        pub fn get_metadata(&self, user: AccountId) -> Option<ExamMetadata> {
+            self.exam_metadata.get(&user)
         }
     }
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
     #[cfg(test)]
     mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
         use super::*;
 
-        /// We test if the default constructor does its job.
-        #[ink::test]
-        fn default_works() {
-            let proctoink = Proctoink::default();
-            assert_eq!(proctoink.get(), false);
-        }
-
-        /// We test a simple use case of our contract.
         #[ink::test]
         fn it_works() {
-            let mut proctoink = Proctoink::new(false);
-            assert_eq!(proctoink.get(), false);
-            proctoink.flip();
-            assert_eq!(proctoink.get(), true);
-        }
-    }
+            let mut contract = Proctoink::new();
+            let user = AccountId::from([0x01; 32]);
 
+            contract.set_start(user, 1000);
+            let meta = contract.get_metadata(user).unwrap();
+            assert_eq!(meta.start_time, Some(1000));
+            assert_eq!(meta.kicked, false);
 
-    /// This is how you'd write end-to-end (E2E) or integration tests for ink! contracts.
-    ///
-    /// When running these you need to make sure that you:
-    /// - Compile the tests with the `e2e-tests` feature flag enabled (`--features e2e-tests`)
-    /// - Are running a Substrate node which contains `pallet-contracts` in the background
-    #[cfg(all(test, feature = "e2e-tests"))]
-    mod e2e_tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
+            contract.add_violation(user, 1100);
+            contract.add_violation(user, 1200);
+            contract.add_violation(user, 1300);
+            let meta = contract.get_metadata(user).unwrap();
+            assert_eq!(meta.kicked, true);
 
-        /// A helper function used for calling contract messages.
-        use ink_e2e::ContractsBackend;
-
-        /// The End-to-End test `Result` type.
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-        /// We test that we can upload and instantiate the contract using its default constructor.
-        #[ink_e2e::test]
-        async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let mut constructor = ProctoinkRef::default();
-
-            // When
-            let contract = client
-                .instantiate("proctoink", &ink_e2e::alice(), &mut constructor)
-                .submit()
-                .await
-                .expect("instantiate failed");
-            let call_builder = contract.call_builder::<Proctoink>();
-
-            // Then
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::alice(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
-
-            Ok(())
-        }
-
-        /// We test that we can read and write a value from the on-chain contract.
-        #[ink_e2e::test]
-        async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let mut constructor = ProctoinkRef::new(false);
-            let contract = client
-                .instantiate("proctoink", &ink_e2e::bob(), &mut constructor)
-                .submit()
-                .await
-                .expect("instantiate failed");
-            let mut call_builder = contract.call_builder::<Proctoink>();
-
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
-
-            // When
-            let flip = call_builder.flip();
-            let _flip_result = client
-                .call(&ink_e2e::bob(), &flip)
-                .submit()
-                .await
-                .expect("flip failed");
-
-            // Then
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), true));
-
-            Ok(())
+            contract.set_end(user, 2000);
+            let meta = contract.get_metadata(user).unwrap();
+            assert_eq!(meta.end_time, Some(2000));
         }
     }
 }
